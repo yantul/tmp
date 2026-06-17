@@ -113,18 +113,19 @@ else
     exit 1
 fi
 
-# ── 测试 3: BCD 寄存器数据校验 ──────────────────────────────────────────
-# 2026-06-17 Tue 14:30:45 → BCD 编码后: [45, 30, 14, 02, 17, 06, 26]
-# 对应: second=45, minute=30, hour=14, weekday=2, day=17, month=6, year=26
+# ── 测试 3: 时间字段校验 ────────────────────────────────────────────────
+# Read 返回解码后的时间格式: [year_lo, year_hi, month, day, weekday, hour, minute, second]
+# 2026-06-17 Tue 14:30:45 → [0xEA, 0x07, 6, 17, 2, 14, 30, 45]
+#                           → hex: ea 07 06 11 02 0e 1e 2d
 sep
-info "测试 3: BCD 寄存器数据校验"
+info "测试 3: 时间字段校验 (解码后)"
 
-EXPECTED_BCD="2d 1e 0e 02 11 06 1a"
-if [ "${READ_HEX}" = "${EXPECTED_BCD}" ]; then
-    pass "BCD 数据正确: ${READ_HEX}"
+EXPECTED_TIME="ea 07 06 11 02 0e 1e 2d"
+if [ "${READ_HEX}" = "${EXPECTED_TIME}" ]; then
+    pass "时间正确: 2026-06-17 Tue 14:30:45 → ${READ_HEX}"
 else
-    fail "BCD 数据不正确!"
-    fail "预期: ${EXPECTED_BCD}"
+    fail "时间不正确!"
+    fail "预期: ${EXPECTED_TIME}"
     fail "实际: ${READ_HEX}"
 fi
 
