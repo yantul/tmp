@@ -35,27 +35,31 @@ function M.patch(drv)
         for i = 1, len do
             local byte_val = string.byte(buffer, i)
             memory[mem_key(object_name, offset + i - 1)] = byte_val
-            log:info('[RTC STUB] WRITE mem[%s+%d]=%02X (%d)', object_name, offset + i - 1, byte_val, byte_val)
+            log:error('[RTC STUB] WRITE mem[%s+%d]=%02X (%d)', object_name, offset + i - 1, byte_val, byte_val)
         end
         return true
     end
 
-    -- 读取桩: 从内存返回
+    -- 读取桩: 从内存返回 7 字节 BCD 寄存器数据
+    -- rtc_chip:read 期望读到 7 字节 BCD 寄存器, 然后解码为时间格式
+    -- 固定返回 7 字节, 忽略请求的 len
     drv._stub_read = function(self, input)
         local offset = input.offset or 0
-        local len = input.len or input.length or 1
+        local reg_count = 7  -- RTC 寄存器数量
 
         local parts = {}
-        for i = 0, len - 1 do
+        for i = 0, reg_count - 1 do
             local val = memory[mem_key(object_name, offset + i)] or 0x00
             parts[#parts + 1] = string.char(val)
-            log:info('[RTC STUB] READ  mem[%s+%d]=%02X (%d)', object_name, offset + i, val, val)
         end
         local result = table.concat(parts)
+
+        log:error('[RTC STUB] READ  name=%s offset=%s data: %s',
+            object_name, offset, M.hex_dump(result))
         return result
     end
 
-    log:info('[RTC STUB] patched driver: %s', object_name)
+    log:error('[RTC STUB] patched driver: %s', object_name)
 end
 
 -- ── 恢复函数 ─────────────────────────────────────────────────────────
@@ -63,13 +67,13 @@ end
 function M.restore(drv)
     drv._stub_read = nil
     drv._stub_write = nil
-    log:info('[RTC STUB] restored driver')
+    log:error('[RTC STUB] restored driver')
 end
 
 -- ── 清空内存 ─────────────────────────────────────────────────────────
 function M.clear()
     memory = {}
-    log:info('[RTC STUB] memory cleared')
+    log:error('[RTC STUB] memory cleared')
 end
 
 -- ── 辅助函数: 十六进制转储 ───────────────────────────────────────────
