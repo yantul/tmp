@@ -18,19 +18,10 @@ local function mem_key(object_name, offset)
     return object_name .. ':' .. offset
 end
 
--- 判断是否为 RTC 驱动
-local function is_rtc(drv)
-    local name = drv.object_name or ''
-    return name:find('[Rr]tc') ~= nil or name:find('RTC') ~= nil
-end
-
 -- ── 核心打桩函数 (所有修改集中在此) ─────────────────────────────────────
 -- 传入 driver 实例, 仅对 RTC 驱动设置 _stub_read/_stub_write 标记
 -- rtc_chip:read/write 会检查这些标记决定是否走桩
 function M.patch(drv)
-    if not is_rtc(drv) then
-        return
-    end
 
     local object_name = drv.object_name or drv.address or 'rtc'
 
@@ -40,13 +31,12 @@ function M.patch(drv)
         local buffer = input.buffer or ''
         local len = #buffer
 
-        log:info('[RTC STUB] WRITE name=%s offset=%s len=%s', object_name, offset, len)
-
+        -- 打印每个字节的存储位置
         for i = 1, len do
-            memory[mem_key(object_name, offset + i - 1)] = string.byte(buffer, i)
+            local byte_val = string.byte(buffer, i)
+            memory[mem_key(object_name, offset + i - 1)] = byte_val
+            log:info('[RTC STUB] WRITE mem[%s+%d]=%02X (%d)', object_name, offset + i - 1, byte_val, byte_val)
         end
-
-        log:info('[RTC STUB] WRITE data: %s', M.hex_dump(buffer))
         return true
     end
 
@@ -59,11 +49,9 @@ function M.patch(drv)
         for i = 0, len - 1 do
             local val = memory[mem_key(object_name, offset + i)] or 0x00
             parts[#parts + 1] = string.char(val)
+            log:info('[RTC STUB] READ  mem[%s+%d]=%02X (%d)', object_name, offset + i, val, val)
         end
         local result = table.concat(parts)
-
-        log:info('[RTC STUB] READ  name=%s offset=%s len=%s data: %s',
-            object_name, offset, len, M.hex_dump(result))
         return result
     end
 
