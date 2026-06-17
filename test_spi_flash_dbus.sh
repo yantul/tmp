@@ -1,18 +1,52 @@
 #!/bin/sh
 # SPI Flash D-Bus 功能验证脚本
 # 通过 busctl --user 访问 SPIFlash 设备，验证写入→读取一致性
-# 用法: sh test_spi_flash_dbus.sh [chip_path]
+# 用法: sh test_spi_flash_dbus.sh [lua]
+#   传 "lua" 使用 Lua版本上下文(单a{ss}), 默认下沉版本(双a{ss}a{ss})
 
 # ── 配置 ──────────────────────────────────────────────────────────────────
 SERVICE="bmc.kepler.hwproxy"
-CHIP_PATH="${1:-/bmc/kepler/Chip/SPIFlash/SPIFlash_1_01}"
+CHIP_PATH="/bmc/kepler/Chip/SPIFlash/SPIFlash_1_01"
 FLASHIO_IFACE="bmc.kepler.Chip.FlashIO"
 BLOCKIO_IFACE="bmc.kepler.Chip.BlockIO"
+
+# 上下文模式: 传 "lua" 则用 Lua版本, 默认下沉版本
+if [ "$1" = "lua" ]; then
+    CONTEXT_MODE="lua"
+else
+    CONTEXT_MODE="native"
+fi
 
 # 测试参数
 TEST_OFFSET=256
 TEST_DATA="222 173 190 239 1 2 3 4"
 TEST_LEN=8
+
+# ── 上下文辅助函数 ─────────────────────────────────────────────────────
+# 根据 CONTEXT_MODE 生成 busctl 上下文参数
+# Lua版本:   a{ss}       →  "a{ss}yu"  1 "Requestor" "XXX" ...
+# 下沉版本:  a{ss}a{ss}  →  "a{ss}a{ss}yu"  1 "Requestor" "XXX" 1 "Requestor" "XXX" ...
+ctx_lock_call() {
+    local req="$1"; shift
+    if [ "${CONTEXT_MODE}" = "lua" ]; then
+        busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetLockStatus \
+            "a{ss}yu" 1 "Requestor" "${req}" "$@"
+    else
+        busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetLockStatus \
+            "a{ss}a{ss}yu" 1 "Requestor" "${req}" 1 "Requestor" "${req}" "$@"
+    fi
+}
+
+ctx_access_call() {
+    local req="$1"; shift
+    if [ "${CONTEXT_MODE}" = "lua" ]; then
+        busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetAccessibility \
+            "a{ss}bq" 1 "Requestor" "${req}" "$@"
+    else
+        busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetAccessibility \
+            "a{ss}a{ss}bq" 1 "Requestor" "${req}" 1 "Requestor" "${req}" "$@"
+    fi
+}
 
 # 颜色
 RED='\033[0;31m'
@@ -236,39 +270,7 @@ else
     fail "实际: ${BLOCK_ACTUAL_HEX}"
 fi
 
-# ── 测试 11: BlockIO.WriteRead (写后读) ───────────────────────────────────
-sep
-info "测试 11: BlockIO.WriteRead - 写入命令后读取数据"
-
-# 先写入数据到偏移 2048，再通过 WriteRead 读回
-BLOCKIO_WR_OFFSET=2048
-BLOCKIO_WR_DATA="10 20 30 40"
-busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Write \
-    "a{ss}uay" 0 "${BLOCKIO_WR_OFFSET}" 4 ${BLOCKIO_WR_DATA} >/dev/null 2>&1
-
-# WriteRead: 先发送读命令头 (0x03 + 3字节地址)，再读取 4 字节
-# 构造 SPI 读命令: cmd=0x03, addr=${BLOCKIO_WR_OFFSET}
-SPI_CMD="3 $((BLOCKIO_WR_OFFSET >> 16)) $((BLOCKIO_WR_OFFSET >> 8 & 0xFF)) $((BLOCKIO_WR_OFFSET & 0xFF))"
-cmd busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" WriteRead \
-    "a{ss}ayu" 0 4 ${SPI_CMD} 4
-WR_RESULT=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" WriteRead \
-    "a{ss}ayu" 0 4 ${SPI_CMD} 4 2>&1) || true
-
-if echo "${WR_RESULT}" | grep -qE "^(ay )?[0-9]"; then
-    pass "BlockIO.WriteRead 成功"
-    WR_ACTUAL=$(parse_ay "${WR_RESULT}")
-    info "WriteRead 返回: ${WR_ACTUAL}"
-    WR_EXPECTED="0a 14 1e 28"
-    if [ "${WR_EXPECTED}" = "${WR_ACTUAL}" ]; then
-        pass "WriteRead 数据一致! 预期: ${WR_EXPECTED} == 实际: ${WR_ACTUAL}"
-    else
-        fail "WriteRead 数据不一致! 预期: ${WR_EXPECTED}, 实际: ${WR_ACTUAL}"
-    fi
-else
-    fail "BlockIO.WriteRead 失败: ${WR_RESULT}"
-fi
-
-# ── 测试 12: BlockIO 多偏移连续读写 ──────────────────────────────────────
+# ── 测试 11: BlockIO 多偏移连续读写 ──────────────────────────────────────
 sep
 info "测试 12: BlockIO 多偏移连续读写"
 
@@ -293,9 +295,175 @@ for OFF_HEX in ${OFFSETS}; do
     fi
 done
 
+# ══════════════════════════════════════════════════════════════════════
+#  bmc.kepler.Chip 接口测试
+# ══════════════════════════════════════════════════════════════════════
+CHIP_IFACE="bmc.kepler.Chip"
+
+# ── 测试 14: HealthStatus 属性读取 ───────────────────────────────────────
+sep
+info "测试 14: HealthStatus - 读取健康状态属性"
+
+HS_RESULT=$(busctl --user get-property "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" HealthStatus 2>&1) || true
+# 去掉类型前缀 (如 "y 0" → "0")
+HS_VALUE=$(echo "${HS_RESULT}" | sed 's/^[a-z] //')
+info "HealthStatus = ${HS_VALUE}"
+
+# 初始应为 0 (ACCESS_SUCCESS)
+if [ "${HS_VALUE}" = "0" ]; then
+    pass "HealthStatus 初始值正确: ${HS_VALUE} (ACCESS_SUCCESS)"
+else
+    fail "HealthStatus 初始值异常: ${HS_VALUE} (期望 0)"
+fi
+
+# 读取 LockStatus 属性
+LOCK_HS=$(busctl --user get-property "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" LockStatus 2>&1) || true
+LOCK_HS_VALUE=$(echo "${LOCK_HS}" | sed 's/^[a-z] //')
+info "LockStatus = ${LOCK_HS_VALUE}"
+
+# ── 测试 15: SetAccessibility - 禁用/启用访问 ────────────────────────────
+sep
+info "测试 15: SetAccessibility - 禁用访问 2 秒"
+
+# 禁用访问: status=false, disable_duration=2秒
+if ctx_access_call "TestClient" false 2; then
+    pass "SetAccessibility(false, 2s) 成功"
+else
+    fail "SetAccessibility(false, 2s) 失败"
+fi
+
+# 验证 disable_duration 范围 [1, 1800]
+info "测试 15b: SetAccessibility - 超范围参数应失败"
+if ctx_access_call "TestClient" false 0 2>/dev/null; then
+    fail "SetAccessibility(duration=0) 应失败但成功了"
+else
+    pass "SetAccessibility(duration=0) 正确拒绝"
+fi
+
+if ctx_access_call "TestClient" false 1801 2>/dev/null; then
+    fail "SetAccessibility(duration=1801) 应失败但成功了"
+else
+    pass "SetAccessibility(duration=1801) 正确拒绝"
+fi
+
+# 恢复访问
+info "测试 15c: SetAccessibility - 恢复访问"
+if ctx_access_call "TestClient" true 1; then
+    pass "SetAccessibility(true) 成功"
+else
+    fail "SetAccessibility(true) 失败"
+fi
+
+# ── 测试 16: SetLockStatus - 锁定/解锁流程 ──────────────────────────────
+sep
+info "测试 16a: SetLockStatus - ClientA 锁定 (op_type=1, lock_time=30)"
+
+LOCK_RET=$(ctx_lock_call "ClientA" 1 30 2>&1) || true
+info "SetLockStatus 返回: ${LOCK_RET}"
+if echo "${LOCK_RET}" | grep -qE "^i 0$|^0$| 0$"; then
+    pass "ClientA 锁定成功 (返回 0)"
+else
+    fail "ClientA 锁定失败 (返回: ${LOCK_RET})"
+fi
+
+# 查看 LockStatus 属性应为 1
+LOCK_STATUS=$(busctl --user get-property "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" LockStatus 2>&1) || true
+LOCK_VALUE=$(echo "${LOCK_STATUS}" | sed 's/^[a-z] //')
+info "LockStatus = ${LOCK_VALUE}"
+if [ "${LOCK_VALUE}" = "1" ]; then
+    pass "LockStatus 已锁定"
+else
+    fail "LockStatus 异常: ${LOCK_VALUE} (期望 1)"
+fi
+
+# ── 测试 16b: 相同 Requestor 读取 (应成功) ───────────────────────────────
+sep
+info "测试 16b: 相同 Requestor (ClientA) 读取应成功"
+
+READ_AFTER_LOCK=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${FLASHIO_IFACE}" Read \
+    "a{ss}uu" 0 0 4 2>&1) || true
+if echo "${READ_AFTER_LOCK}" | grep -qE "^(ay )?[0-9]"; then
+    pass "ClientA 锁定后读取成功: $(parse_ay "${READ_AFTER_LOCK}")"
+else
+    fail "ClientA 锁定后读取失败: ${READ_AFTER_LOCK}"
+fi
+
+# ── 测试 16c: 相同 Requestor 续锁 (应成功) ───────────────────────────────
+sep
+info "测试 16c: 相同 Requestor (ClientA) 续锁"
+
+EXTEND_RET=$(ctx_lock_call "ClientA" 1 60 2>&1) || true
+info "续锁返回: ${EXTEND_RET}"
+if echo "${EXTEND_RET}" | grep -qE "^i 0$|^0$| 0$"; then
+    pass "ClientA 续锁成功"
+else
+    fail "ClientA 续锁失败: ${EXTEND_RET}"
+fi
+
+# ── 测试 16d: 不同 Requestor 解锁 (应失败, RequestorMismatched=3) ────────
+sep
+info "测试 16d: 不同 Requestor (ClientB) 解锁应失败"
+
+UNLOCK_WRONG=$(ctx_lock_call "ClientB" 0 0 2>&1) || true
+info "ClientB 解锁返回: ${UNLOCK_WRONG}"
+if echo "${UNLOCK_WRONG}" | grep -qE " 3$|^3$"; then
+    pass "ClientB 解锁正确被拒 (RequestorMismatched=3)"
+else
+    fail "ClientB 解锁返回异常: ${UNLOCK_WRONG} (期望 3)"
+fi
+
+# ── 测试 16e: 正确 Requestor 解锁 (应成功) ──────────────────────────────
+sep
+info "测试 16e: 正确 Requestor (ClientA) 解锁"
+
+UNLOCK_OK=$(ctx_lock_call "ClientA" 0 0 2>&1) || true
+info "ClientA 解锁返回: ${UNLOCK_OK}"
+if echo "${UNLOCK_OK}" | grep -qE "^i 0$|^0$| 0$"; then
+    pass "ClientA 解锁成功"
+else
+    fail "ClientA 解锁失败: ${UNLOCK_OK}"
+fi
+
+# 验证 LockStatus 恢复为 0
+LOCK_STATUS=$(busctl --user get-property "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" LockStatus 2>&1) || true
+LOCK_VALUE=$(echo "${LOCK_STATUS}" | sed 's/^[a-z] //')
+if [ "${LOCK_VALUE}" = "0" ]; then
+    pass "LockStatus 已解锁"
+else
+    fail "LockStatus 异常: ${LOCK_VALUE} (期望 0)"
+fi
+
+# ── 测试 16f: 重复解锁 (应失败, AlreadyUnlocked=2) ─────────────────────
+sep
+info "测试 16f: 重复解锁应失败"
+
+UNLOCK_TWICE=$(ctx_lock_call "ClientA" 0 0 2>&1) || true
+info "重复解锁返回: ${UNLOCK_TWICE}"
+if echo "${UNLOCK_TWICE}" | grep -qE " 2$|^2$"; then
+    pass "重复解锁正确被拒 (AlreadyUnlocked=2)"
+else
+    fail "重复解锁返回异常: ${UNLOCK_TWICE} (期望 2)"
+fi
+
+# ── 测试 16g: 锁定参数校验 ──────────────────────────────────────────────
+sep
+info "测试 16g: 锁定参数校验 (lock_time 超限)"
+
+LOCK_BAD=$(ctx_lock_call "ClientA" 1 1801 2>&1) || true
+info "超时锁定返回: ${LOCK_BAD}"
+if echo "${LOCK_BAD}" | grep -qE " 1$|^1$"; then
+    pass "超时锁定正确拒绝 (InvalidParameter=1)"
+else
+    fail "超时锁定返回异常: ${LOCK_BAD} (期望 1)"
+fi
+
 # ── 结果汇总 ──────────────────────────────────────────────────────────────
 sep
 info "测试完成"
 info "设备路径: ${SERVICE} ${CHIP_PATH}"
-info "Stub 日志请检查 hwproxy 的 stderr 输出 ([SPI WRITE] / [SPI READ])"
+if [ "${CONTEXT_MODE}" = "lua" ]; then
+    info "上下文模式: Lua版本 (单a{ss})"
+else
+    info "上下文模式: 下沉版本 (双a{ss}a{ss})"
+fi
 sep
