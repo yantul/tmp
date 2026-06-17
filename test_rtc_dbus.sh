@@ -113,11 +113,24 @@ else
     exit 1
 fi
 
-# ── 测试 3: 写入即读回一致性 ────────────────────────────────────────────
-# 验证桩的内存读写一致: 写入什么读回什么
-# 用相同的输入再写一次, 读回应与第一次相同
+# ── 测试 3: BCD 寄存器数据校验 ──────────────────────────────────────────
+# 2026-06-17 Tue 14:30:45 → BCD 编码后: [45, 30, 14, 02, 17, 06, 26]
+# 对应: second=45, minute=30, hour=14, weekday=2, day=17, month=6, year=26
 sep
-info "测试 3: 写入即读回一致性"
+info "测试 3: BCD 寄存器数据校验"
+
+EXPECTED_BCD="2d 1e 0e 02 11 06 1a"
+if [ "${READ_HEX}" = "${EXPECTED_BCD}" ]; then
+    pass "BCD 数据正确: ${READ_HEX}"
+else
+    fail "BCD 数据不正确!"
+    fail "预期: ${EXPECTED_BCD}"
+    fail "实际: ${READ_HEX}"
+fi
+
+# ── 测试 4: 写入即读回一致性 ────────────────────────────────────────────
+sep
+info "测试 4: 写入即读回一致性"
 
 busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Write \
     "a{ss}uay" 0 0 8 234 7 6 17 2 14 30 45 >/dev/null 2>&1
