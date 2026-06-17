@@ -25,19 +25,17 @@ local function is_rtc(drv)
 end
 
 -- ── 核心打桩函数 (所有修改集中在此) ─────────────────────────────────────
--- 传入 driver 实例, 仅对 RTC 驱动替换 read/write 为内存读写
--- 返回原始 read/write 引用, 方便恢复
+-- 传入 driver 实例, 仅对 RTC 驱动设置 _stub_read/_stub_write 标记
+-- rtc_chip:read/write 会检查这些标记决定是否走桩
 function M.patch(drv)
     if not is_rtc(drv) then
-        return nil, nil
+        return
     end
 
     local object_name = drv.object_name or drv.address or 'rtc'
-    local orig_read = drv.read
-    local orig_write = drv.write
 
-    -- 写入: 存储到内存
-    drv.write = function(self, input)
+    -- 写入桩: 存储到内存
+    drv._stub_write = function(self, input)
         local offset = input.offset or 0
         local buffer = input.buffer or ''
         local len = #buffer
@@ -52,8 +50,8 @@ function M.patch(drv)
         return true
     end
 
-    -- 读取: 从内存返回
-    drv.read = function(self, input)
+    -- 读取桩: 从内存返回
+    drv._stub_read = function(self, input)
         local offset = input.offset or 0
         local len = input.len or input.length or 1
 
@@ -70,16 +68,13 @@ function M.patch(drv)
     end
 
     log:info('[RTC STUB] patched driver: %s', object_name)
-
-    -- 返回原始函数引用, 方便恢复
-    return orig_read, orig_write
 end
 
 -- ── 恢复函数 ─────────────────────────────────────────────────────────
--- 传入 driver 实例和原始 read/write 引用, 恢复原始行为
-function M.restore(drv, orig_read, orig_write)
-    if orig_read then drv.read = orig_read end
-    if orig_write then drv.write = orig_write end
+-- 移除桩标记, 恢复原始行为
+function M.restore(drv)
+    drv._stub_read = nil
+    drv._stub_write = nil
     log:info('[RTC STUB] restored driver')
 end
 
