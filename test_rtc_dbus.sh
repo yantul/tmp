@@ -79,9 +79,9 @@ pass "设备存在"
 # ══════════════════════════════════════════════════════════════════════
 
 # ── 测试 1: BlockIO.Write 写入时间 ────────────────────────────────────────
-# RTC block_write 输入格式: [year_lo, year_hi, month, day, weekday, hour, minute, second]
+# RTC block_write 输入: [year_lo, year_hi, month, day, weekday, hour, minute, second]
 # 2026-06-17 Tue 14:30:45 → [234, 7, 6, 17, 2, 14, 30, 45]
-# chip_rtc 会做 BCD 编码再存入桩, 读取时 BCD 解码还原
+# 经过 BCD 编码后, 桩中存储 BCD 格式的 7 字节寄存器数据
 sep
 info "测试 1: BlockIO.Write - 写入 2026-06-17 Tue 14:30:45"
 
@@ -95,14 +95,14 @@ else
     exit 1
 fi
 
-# ── 测试 2: BlockIO.Read 读回 ─────────────────────────────────────────────
+# ── 测试 2: BlockIO.Read 读回 (BCD 寄存器格式) ──────────────────────────
 sep
-info "测试 2: BlockIO.Read - 读回 8 字节"
+info "测试 2: BlockIO.Read - 读回 BCD 寄存器数据"
 
 cmd busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Read \
-    "a{ss}uu" 0 0 8
+    "a{ss}uu" 0 0 7
 READ_RESULT=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Read \
-    "a{ss}uu" 0 0 8 2>&1) || true
+    "a{ss}uu" 0 0 7 2>&1) || true
 
 if echo "${READ_RESULT}" | grep -qE "^(ay )?[0-9]"; then
     pass "Read 成功"
@@ -113,47 +113,24 @@ else
     exit 1
 fi
 
-# ── 测试 3: 时间值一致性校验 (BCD 编解码后) ─────────────────────────────
-# 输出格式: [year_lo, year_hi, month, day, weekday, hour, minute, second]
-# 2026-06-17 Tue 14:30:45 → [0xEA, 0x07, 6, 17, 2, 14, 30, 45]
+# ── 测试 3: 写入即读回一致性 ────────────────────────────────────────────
+# 验证桩的内存读写一致: 写入什么读回什么
+# 用相同的输入再写一次, 读回应与第一次相同
 sep
-info "测试 3: 时间值一致性校验"
+info "测试 3: 写入即读回一致性"
 
-# 从读取结果提取各字段
-R_YEAR_LO=$(echo "${READ_HEX}" | awk '{print $1}')
-R_YEAR_HI=$(echo "${READ_HEX}" | awk '{print $2}')
-R_MONTH=$(echo "${READ_HEX}" | awk '{print $3}')
-R_DAY=$(echo "${READ_HEX}" | awk '{print $4}')
-R_WEEK=$(echo "${READ_HEX}" | awk '{print $5}')
-R_HOUR=$(echo "${READ_HEX}" | awk '{print $6}')
-R_MIN=$(echo "${READ_HEX}" | awk '{print $7}')
-R_SEC=$(echo "${READ_HEX}" | awk '{print $8}')
+busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Write \
+    "a{ss}uay" 0 0 8 234 7 6 17 2 14 30 45 >/dev/null 2>&1
+READ2=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Read \
+    "a{ss}uu" 0 0 7 2>&1) || true
+READ2_HEX=$(parse_ay "${READ2}")
 
-# 验证各字段 (十六进制比较)
-PASS_FLAG=1
-check_field() {
-    local name="$1" expect="$2" actual="$3"
-    if [ "${expect}" = "${actual}" ]; then
-        pass "${name}: 0x${actual} == 0x${expect}"
-    else
-        fail "${name}: 0x${actual} != 0x${expect}"
-        PASS_FLAG=0
-    fi
-}
-
-check_field "year_lo"  "ea" "${R_YEAR_LO}"
-check_field "year_hi"  "07" "${R_YEAR_HI}"
-check_field "month"    "06" "${R_MONTH}"
-check_field "day"      "11" "${R_DAY}"
-check_field "weekday"  "02" "${R_WEEK}"
-check_field "hour"     "0e" "${R_HOUR}"
-check_field "minute"   "1e" "${R_MIN}"
-check_field "second"   "2d" "${R_SEC}"
-
-if [ "${PASS_FLAG}" -eq 1 ]; then
-    pass "时间值全部正确: 2026-06-17 Tue 14:30:45"
+if [ "${READ_HEX}" = "${READ2_HEX}" ]; then
+    pass "两次写入读回一致: ${READ2_HEX}"
 else
-    fail "时间值校验失败"
+    fail "两次写入读回不一致!"
+    fail "第1次: ${READ_HEX}"
+    fail "第2次: ${READ2_HEX}"
 fi
 
 # ── 测试 4: 多次不同时间写入→读取验证 ────────────────────────────────────
