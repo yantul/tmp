@@ -176,6 +176,10 @@ end
 
 -- ── init: 初始化驱动桩 ──────────────────────────────────────────────
 function hisport2:init(init_info)
+    if not init_info then
+        log:info('[SPI STUB] init: init_info is nil, skip')
+        return
+    end
     log:info('[SPI STUB] init: en_mode=0x%02x, nego_max_speed=%s',
         init_info.en_mode or 0, init_info.nego_max_speed or 0)
 end
