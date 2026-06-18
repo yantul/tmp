@@ -81,7 +81,8 @@ pass "设备存在"
 # ── 测试 1: BlockIO.Write 写入时间 ────────────────────────────────────────
 # RTC block_write 输入: [year_lo, year_hi, month, day, weekday, hour, minute, second]
 # 2026-06-17 Tue 14:30:45 → [234, 7, 6, 17, 2, 14, 30, 45]
-# 经过 BCD 编码后, 桩中存储 BCD 格式的 7 字节寄存器数据
+# BCD 编码后 + 世纪位: [0x45, 0x30, 0x14, 0x02, 0x17, 0x86, 0x26]
+# month=0x86 = BCD(6) | 0x80(世纪位, year>=2000)
 sep
 info "测试 1: BlockIO.Write - 写入 2026-06-17 Tue 14:30:45"
 
@@ -154,7 +155,7 @@ info "测试 4: 多次不同时间写入→读取验证"
 check_time() {
     local label="$1" expect_s="$2" expect_min="$3" expect_h="$4" expect_d="$5" expect_mon="$6"
     local result=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Read \
-        "a{ss}uu" 0 0 8 2>&1) || true
+        "a{ss}uu" 0 0 7 2>&1) || true
     local hex=$(parse_ay "${result}")
     local s=$(echo "${hex}" | awk '{print $8}')
     local min=$(echo "${hex}" | awk '{print $7}')
