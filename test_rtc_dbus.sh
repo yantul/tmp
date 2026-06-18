@@ -182,9 +182,9 @@ busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Write \
     "a{ss}uay" 0 0 8 233 7 12 31 3 23 59 59 >/dev/null 2>&1
 check_time "2025-12-31 23:59:59" "3b" "3b" "17" "1f" "0c"
 
-# 写入 2000-01-01 Sat 00:00:00 → [0,7,1,1,6,0,0,0] (世纪位测试)
+# 写入 2000-01-01 Sat 00:00:00 → [208,7,1,1,6,0,0,0] (2000%256=208)
 busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Write \
-    "a{ss}uay" 0 0 8 0 7 1 1 6 0 0 0 >/dev/null 2>&1
+    "a{ss}uay" 0 0 8 208 7 1 1 6 0 0 0 >/dev/null 2>&1
 check_time "2000-01-01 00:00:00" "00" "00" "00" "01" "01"
 
 # 写入 2026-06-17 Tue 14:30:45 → [234,7,6,17,2,14,30,45]
