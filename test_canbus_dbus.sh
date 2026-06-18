@@ -27,13 +27,13 @@ TEST_LEN=8
 
 # ── 上下文辅助函数 ─────────────────────────────────────────────────────
 # Busctl 上下文: 双 a{ss} (下沉版本)
-CONTEXT='1 "Requestor" "TestClient" 1 "Requestor" "TestClient"'
-# Busctl 方法签名 (上下文 a{ss}a{ss} + 方法参数)
-SIG_WRITE="a{ss}a{ss}uay"
-SIG_READ="a{ss}a{ss}uu"
-SIG_WRITE_READ="a{ss}a{ss}ayu"
-SIG_BIT_READ="a{ss}a{ss}uuy"
-SIG_BIT_WRITE="a{ss}a{ss}uuyay"
+CONTEXT='1 "Requestor" "TestClient"'
+# Busctl 方法签名 (上下文 a{ss} + 方法参数)
+SIG_WRITE="a{ss}uay"
+SIG_READ="a{ss}uu"
+SIG_WRITE_READ="a{ss}ayu"
+SIG_BIT_READ="a{ss}uuy"
+SIG_BIT_WRITE="a{ss}uuyay"
 
 # 颜色
 RED='\033[0;31m'
@@ -302,7 +302,7 @@ sep
 info "测试 12a: SetLockStatus - ClientA 锁定"
 
 LOCK_RET=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 1 30 2>&1) || true
+    "a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 1 30 2>&1) || true
 info "返回: ${LOCK_RET}"
 if echo "${LOCK_RET}" | grep -qE "^i 0$|^0$| 0$"; then
     pass "ClientA 锁定成功"
@@ -312,7 +312,7 @@ fi
 
 info "测试 12b: ClientA 解锁"
 UNLOCK_RET=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 0 0 2>&1) || true
+    "a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 0 0 2>&1) || true
 if echo "${UNLOCK_RET}" | grep -qE "^i 0$|^0$| 0$"; then
     pass "ClientA 解锁成功"
 else
@@ -324,7 +324,7 @@ sep
 info "测试 13a: SetAccessibility - 禁用访问"
 
 if busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetAccessibility \
-    "a{ss}a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" false 2; then
+    "a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" false 2; then
     pass "SetAccessibility(false, 2s) 成功"
 else
     fail "SetAccessibility(false, 2s) 失败"
@@ -332,7 +332,7 @@ fi
 
 info "测试 13b: SetAccessibility - 恢复访问"
 if busctl --user call "${SERVICE}" "${CHIP_PATH}" "${CHIP_IFACE}" SetAccessibility \
-    "a{ss}a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" true 1; then
+    "a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" true 1; then
     pass "SetAccessibility(true) 成功"
 else
     fail "SetAccessibility(true) 失败"
