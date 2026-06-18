@@ -1,18 +1,23 @@
 #!/bin/sh
 # JtagOverHisport D-Bus 功能验证脚本
 # 通过 busctl --user 访问 JtagOverHisport 总线和 CPLD 芯片
-# 用法: sh test_jtag_over_hisport_dbus.sh [bus_path]
+# 用法: sh test_jtag_over_hisport_dbus.sh [lua]
+#   传 "lua" 使用 Lua版本上下文(单a{ss}), 默认下沉版本(双a{ss}a{ss})
 
 # ── 配置 ──────────────────────────────────────────────────────────────────
 SERVICE="bmc.kepler.hwproxy"
 BUS_PATH="/bmc/kepler/Bus/JtagOverHisport/JtagOverHisport_1"
 CPLD_PATH="/bmc/kepler/Chip/Cpld/Cpld_2_01"
 BUS_IFACE="bmc.kepler.Bus"
+CHIP_IFACE="bmc.kepler.Chip"
 JTAG_TARGET_IFACE="bmc.kepler.Chip.JtagTarget"
+BLOCKIO_IFACE="bmc.kepler.Chip.BlockIO"
 
-# 支持传入自定义路径
-if [ -n "$1" ]; then
-    BUS_PATH="$1"
+# 上下文模式: 传 "lua" 则用 Lua版本, 默认下沉版本
+if [ "$1" = "lua" ]; then
+    CONTEXT_MODE="lua"
+else
+    CONTEXT_MODE="native"
 fi
 
 # 颜色
@@ -26,6 +31,48 @@ fail() { printf "${RED}[FAIL]${NC} %s\n" "$1"; }
 info() { printf "${YELLOW}[INFO]${NC} %s\n" "$1"; }
 cmd()  { printf "${YELLOW}[CMD]${NC}  %s\n" "$*"; }
 sep()  { echo "────────────────────────────────────────────────────────"; }
+
+# ── 上下文辅助函数 ─────────────────────────────────────────────────────
+# Lua版本:   a{ss}       →  "a{ss}XXX"  0 ...
+# 下沉版本:  a{ss}a{ss}  →  "a{ss}a{ss}XXX"  1 "Requestor" "TestClient" 1 "Requestor" "TestClient" ...
+ctx_sig() {
+    local suffix="$1"
+    if [ "${CONTEXT_MODE}" = "lua" ]; then
+        echo "a{ss}${suffix}"
+    else
+        echo "a{ss}a{ss}${suffix}"
+    fi
+}
+
+ctx_args() {
+    if [ "${CONTEXT_MODE}" = "lua" ]; then
+        echo "0"
+    else
+        echo '1 "Requestor" "TestClient" 1 "Requestor" "TestClient"'
+    fi
+}
+
+ctx_lock_call() {
+    local req="$1"; shift
+    if [ "${CONTEXT_MODE}" = "lua" ]; then
+        busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
+            "a{ss}yu" 0 "$@"
+    else
+        busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
+            "a{ss}a{ss}yu" 1 "Requestor" "${req}" 1 "Requestor" "${req}" "$@"
+    fi
+}
+
+ctx_access_call() {
+    local req="$1"; shift
+    if [ "${CONTEXT_MODE}" = "lua" ]; then
+        busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetAccessibility \
+            "a{ss}bq" 0 "$@"
+    else
+        busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetAccessibility \
+            "a{ss}a{ss}bq" 1 "Requestor" "${req}" 1 "Requestor" "${req}" "$@"
+    fi
+}
 
 # ── 检查设备是否存在 ──────────────────────────────────────────────────────
 sep
@@ -97,10 +144,12 @@ sep
 
 # ── 测试 3: GetChipIdcode - 获取芯片 ID ────────────────────────────────
 sep
-info "测试 3: GetChipIdcode - 获取 CPLD 芯片 ID"
+info "测试 3: GetChipIdcode - 获取 CPLD 芯片 ID (模式: ${CONTEXT_MODE})"
 
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" GetChipIdcode "a{ss}" 0
-IDCODE_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" GetChipIdcode "a{ss}" 0 2>&1) || true
+JTAG_SIG=$(ctx_sig "")
+JTAG_CTX=$(ctx_args)
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" GetChipIdcode "${JTAG_SIG}" ${JTAG_CTX}
+IDCODE_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" GetChipIdcode "${JTAG_SIG}" ${JTAG_CTX} 2>&1) || true
 
 if echo "${IDCODE_RESULT}" | grep -qE "^au"; then
     pass "GetChipIdcode 成功: ${IDCODE_RESULT}"
@@ -112,8 +161,10 @@ fi
 sep
 info "测试 4: SetTargetNumber - 设置目标编号"
 
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetTargetNumber "a{ss}u" 0 1
-if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetTargetNumber "a{ss}u" 0 1 2>&1; then
+JTAG_SIG_U=$(ctx_sig "u")
+JTAG_CTX=$(ctx_args)
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetTargetNumber "${JTAG_SIG_U}" ${JTAG_CTX} 1
+if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetTargetNumber "${JTAG_SIG_U}" ${JTAG_CTX} 1 2>&1; then
     pass "SetTargetNumber(1) 成功"
 else
     fail "SetTargetNumber(1) 失败"
@@ -123,22 +174,24 @@ fi
 sep
 info "测试 5: SetBypassMode - 设置 Bypass 模式"
 
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetBypassMode "a{ss}b" 0 true
-if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetBypassMode "a{ss}b" 0 true 2>&1; then
+JTAG_SIG_B=$(ctx_sig "b")
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetBypassMode "${JTAG_SIG_B}" ${JTAG_CTX} true
+if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetBypassMode "${JTAG_SIG_B}" ${JTAG_CTX} true 2>&1; then
     pass "SetBypassMode(true) 成功"
 else
     fail "SetBypassMode(true) 失败"
 fi
 
 # 禁用 Bypass
-busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetBypassMode "a{ss}b" 0 false >/dev/null 2>&1
+busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" SetBypassMode "${JTAG_SIG_B}" ${JTAG_CTX} false >/dev/null 2>&1
 
 # ── 测试 6: BypassChannelTest ─────────────────────────────────────────
 sep
 info "测试 6: BypassChannelTest - 测试 Bypass 通道"
 
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" BypassChannelTest "a{ss}yy" 0 0 0
-BYPASS_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" BypassChannelTest "a{ss}yy" 0 0 0 2>&1) || true
+JTAG_SIG_YY=$(ctx_sig "yy")
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" BypassChannelTest "${JTAG_SIG_YY}" ${JTAG_CTX} 0 0
+BYPASS_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" BypassChannelTest "${JTAG_SIG_YY}" ${JTAG_CTX} 0 0 2>&1) || true
 info "BypassChannelTest 结果: ${BYPASS_RESULT}"
 
 if echo "${BYPASS_RESULT}" | grep -qE "^b"; then
@@ -177,12 +230,11 @@ info "测试 8: BlockIO.Write - 通过 BlockIO 写入 SVF 文件路径"
 # 0x2F=47 0x74=116 0x6D=109 0x70=112 0x2F=47 0x74=116 0x65=101 0x73=115 0x74=116 0x2E=46 0x73=115 0x76=118 0x66=102
 SVF_PATH_BYTES="0 0 0 0 0 0 0 0 0 0 0 0 67 0 0 0 0 0 0 0 49 0 0 13 0 0 0 47 116 109 112 47 116 101 115 116 46 115 118 102"
 
-BLOCKIO_IFACE="bmc.kepler.Chip.BlockIO"
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${BLOCKIO_IFACE}" Write "a{ss}uay" 0 0 40 ${SVF_PATH_BYTES}
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${BLOCKIO_IFACE}" Write "$(ctx_sig uay)" ${JTAG_CTX} 0 40 ${SVF_PATH_BYTES}
 
 touch /tmp/test.svf
 
-if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${BLOCKIO_IFACE}" Write "a{ss}uay" 0 0 40 ${SVF_PATH_BYTES} 2>&1; then
+if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${BLOCKIO_IFACE}" Write "$(ctx_sig uay)" ${JTAG_CTX} 0 40 ${SVF_PATH_BYTES} 2>&1; then
     pass "BlockIO.Write (SVF 文件路径) 成功"
 else
     info "BlockIO.Write 可能需要实际硬件支持"
@@ -192,9 +244,10 @@ fi
 sep
 info "测试 9: Collect - 收集寄存器到指定文件"
 
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Collect a{ss}sys 0 "${UPGRADE_DIR}/aaa" 1 "${COLLECT_DIR}/bbb"
+JTAG_SIG_SYS=$(ctx_sig "sys")
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Collect ${JTAG_SIG_SYS} ${JTAG_CTX} "${UPGRADE_DIR}/aaa" 1 "${COLLECT_DIR}/bbb"
 
-COLLECT_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Collect a{ss}sys 0 "${UPGRADE_DIR}/aaa" 1 "${COLLECT_DIR}/bbb" 2>&1) || true
+COLLECT_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Collect ${JTAG_SIG_SYS} ${JTAG_CTX} "${UPGRADE_DIR}/aaa" 1 "${COLLECT_DIR}/bbb" 2>&1) || true
 
 if echo "${COLLECT_RESULT}" | grep -qE "^$|^i 0$|成功" || [ -z "${COLLECT_RESULT}" ]; then
     pass "Collect 成功"
@@ -212,9 +265,10 @@ fi
 sep
 info "测试 10: Upgrade - CPLD 升级"
 
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Upgrade a{ss}sy 0 "${UPGRADE_DIR}/aaa" 1
+JTAG_SIG_SY=$(ctx_sig "sy")
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Upgrade ${JTAG_SIG_SY} ${JTAG_CTX} "${UPGRADE_DIR}/aaa" 1
 
-UPGRADE_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Upgrade a{ss}sy 0 "${UPGRADE_DIR}/aaa" 1 2>&1) || true
+UPGRADE_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Upgrade ${JTAG_SIG_SY} ${JTAG_CTX} "${UPGRADE_DIR}/aaa" 1 2>&1) || true
 
 if echo "${UPGRADE_RESULT}" | grep -qE "^$|^i 0$|成功" || [ -z "${UPGRADE_RESULT}" ]; then
     pass "Upgrade 成功"
@@ -226,9 +280,9 @@ fi
 sep
 info "测试 11: Verify - CPLD 验证"
 
-cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Verify a{ss}sy 0 "${UPGRADE_DIR}/aaa" 1
+cmd busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Verify ${JTAG_SIG_SY} ${JTAG_CTX} "${UPGRADE_DIR}/aaa" 1
 
-VERIFY_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Verify a{ss}sy 0 "${UPGRADE_DIR}/aaa" 1 2>&1) || true
+VERIFY_RESULT=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${JTAG_TARGET_IFACE}" Verify ${JTAG_SIG_SY} ${JTAG_CTX} "${UPGRADE_DIR}/aaa" 1 2>&1) || true
 
 if echo "${VERIFY_RESULT}" | grep -qE "^$|^i 0$|成功" || [ -z "${VERIFY_RESULT}" ]; then
     pass "Verify 成功"
@@ -265,21 +319,21 @@ sep
 info "测试 13: SetAccessibility - 禁用访问 2 秒"
 
 # 禁用访问: status=false, disable_duration=2秒
-busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetAccessibility \
-    "a{ss}a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" false 2 2>&1 || true
-pass "SetAccessibility(false, 2s) 完成"
+if ctx_access_call "TestClient" false 2; then
+    pass "SetAccessibility(false, 2s) 成功"
+else
+    fail "SetAccessibility(false, 2s) 失败"
+fi
 
 # 验证 disable_duration 范围 [1, 1800]
 info "测试 13b: SetAccessibility - 超范围参数应失败"
-if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetAccessibility \
-    "a{ss}a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" false 0 2>/dev/null; then
+if ctx_access_call "TestClient" false 0 2>/dev/null; then
     fail "SetAccessibility(duration=0) 应失败但成功了"
 else
     pass "SetAccessibility(duration=0) 正确拒绝"
 fi
 
-if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetAccessibility \
-    "a{ss}a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" false 1801 2>/dev/null; then
+if ctx_access_call "TestClient" false 1801 2>/dev/null; then
     fail "SetAccessibility(duration=1801) 应失败但成功了"
 else
     pass "SetAccessibility(duration=1801) 正确拒绝"
@@ -287,8 +341,7 @@ fi
 
 # 恢复访问
 info "测试 13c: SetAccessibility - 恢复访问"
-if busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetAccessibility \
-    "a{ss}a{ss}bq" 1 "Requestor" "TestClient" 1 "Requestor" "TestClient" true 1; then
+if ctx_access_call "TestClient" true 1; then
     pass "SetAccessibility(true) 成功"
 else
     fail "SetAccessibility(true) 失败"
@@ -298,8 +351,7 @@ fi
 sep
 info "测试 14a: SetLockStatus - ClientA 锁定 (op_type=1, lock_time=30)"
 
-LOCK_RET=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 1 30 2>&1) || true
+LOCK_RET=$(ctx_lock_call "ClientA" 1 30 2>&1) || true
 info "SetLockStatus 返回: ${LOCK_RET}"
 if echo "${LOCK_RET}" | grep -qE "^i 0$|^0$| 0$"; then
     pass "ClientA 锁定成功 (返回 0)"
@@ -321,8 +373,7 @@ fi
 sep
 info "测试 14b: 相同 Requestor (ClientA) 续锁"
 
-EXTEND_RET=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 1 60 2>&1) || true
+EXTEND_RET=$(ctx_lock_call "ClientA" 1 60 2>&1) || true
 info "续锁返回: ${EXTEND_RET}"
 if echo "${EXTEND_RET}" | grep -qE "^i 0$|^0$| 0$"; then
     pass "ClientA 续锁成功"
@@ -334,8 +385,7 @@ fi
 sep
 info "测试 14c: 不同 Requestor (ClientB) 解锁应失败"
 
-UNLOCK_WRONG=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientB" 1 "Requestor" "ClientB" 0 0 2>&1) || true
+UNLOCK_WRONG=$(ctx_lock_call "ClientB" 0 0 2>&1) || true
 info "ClientB 解锁返回: ${UNLOCK_WRONG}"
 if echo "${UNLOCK_WRONG}" | grep -qE " 3$|^3$"; then
     pass "ClientB 解锁正确被拒 (RequestorMismatched=3)"
@@ -347,8 +397,7 @@ fi
 sep
 info "测试 14d: 正确 Requestor (ClientA) 解锁"
 
-UNLOCK_OK=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 0 0 2>&1) || true
+UNLOCK_OK=$(ctx_lock_call "ClientA" 0 0 2>&1) || true
 info "ClientA 解锁返回: ${UNLOCK_OK}"
 if echo "${UNLOCK_OK}" | grep -qE "^i 0$|^0$| 0$"; then
     pass "ClientA 解锁成功"
@@ -369,8 +418,7 @@ fi
 sep
 info "测试 14e: 重复解锁应失败"
 
-UNLOCK_TWICE=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 0 0 2>&1) || true
+UNLOCK_TWICE=$(ctx_lock_call "ClientA" 0 0 2>&1) || true
 info "重复解锁返回: ${UNLOCK_TWICE}"
 if echo "${UNLOCK_TWICE}" | grep -qE " 2$|^2$"; then
     pass "重复解锁正确被拒 (AlreadyUnlocked=2)"
@@ -382,8 +430,7 @@ fi
 sep
 info "测试 14f: 锁定参数校验 (lock_time 超限)"
 
-LOCK_BAD=$(busctl --user call "${SERVICE}" "${CPLD_PATH}" "${CHIP_IFACE}" SetLockStatus \
-    "a{ss}a{ss}yu" 1 "Requestor" "ClientA" 1 "Requestor" "ClientA" 1 1801 2>&1) || true
+LOCK_BAD=$(ctx_lock_call "ClientA" 1 1801 2>&1) || true
 info "超时锁定返回: ${LOCK_BAD}"
 if echo "${LOCK_BAD}" | grep -qE " 1$|^1$"; then
     pass "超时锁定正确拒绝 (InvalidParameter=1)"
@@ -406,4 +453,9 @@ sep
 info "测试完成"
 info "总线路径: ${SERVICE} ${BUS_PATH}"
 info "CPLD路径: ${SERVICE} ${CPLD_PATH}"
+if [ "${CONTEXT_MODE}" = "lua" ]; then
+    info "上下文模式: Lua版本 (单a{ss})"
+else
+    info "上下文模式: 下沉版本 (双a{ss}a{ss})"
+fi
 sep
