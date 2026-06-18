@@ -92,7 +92,7 @@ fi
 # CAN 帧格式: [CAN_ID(4)] + [payload(8)]
 # CAN_ID = 0xA0038280 (little-endian: 80 82 03 A0)
 sep
-info "测试 1: BlockIO.Write - 发送 CAN 帧 (CAN_ID=0x${TEST_CAN_ID})"
+info "测试 1: BlockIO.Write - 发送 CAN 帧 (CAN_ID=0xA0038280)"
 
 cmd busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Write \
     "${SIG_WRITE}" ${CONTEXT} 0 12 ${TEST_CAN_ID_HEX} ${TEST_PAYLOAD}
@@ -104,11 +104,30 @@ else
     exit 1
 fi
 
-# ── 测试 2: BlockIO.WriteRead - 写命令后读响应 (CAN 正常通信模式) ──────
+# ── 测试 2: BlockIO.Read - 读取 CAN 帧响应 ──────────────────────────────
+# Read(offset=CAN_ID, length=frame_len) - 从已写入的 CAN ID 读取响应
+sep
+info "测试 2: BlockIO.Read - 读取 CAN 帧响应 (offset=CAN_ID, len=12)"
+
+cmd busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Read \
+    "${SIG_READ}" ${CONTEXT} ${TEST_CAN_ID} 12
+READ_BLOCK_RESULT=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" Read \
+    "${SIG_READ}" ${CONTEXT} ${TEST_CAN_ID} 12 2>&1) || true
+
+if echo "${READ_BLOCK_RESULT}" | grep -qE "^(ay )?[0-9]"; then
+    READ_HEX=$(parse_ay "${READ_BLOCK_RESULT}")
+    info "读取到: ${READ_HEX}"
+    pass "Read 成功"
+else
+    info "Read 返回: ${READ_BLOCK_RESULT}"
+    info "无预置响应数据时可能返回空"
+fi
+
+# ── 测试 3: BlockIO.WriteRead - 写命令后读响应 (CAN 正常通信模式) ──────
 # CAN 通信必须先写命令帧，再读响应帧
 # WriteRead(indata=[CAN_ID+payload], read_length=frame_len)
 sep
-info "测试 2: BlockIO.WriteRead - 写命令后读响应 (CAN_ID=0x${TEST_CAN_ID})"
+info "测试 3: BlockIO.WriteRead - 写命令后读响应 (CAN_ID=0xA0038280)"
 
 cmd busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BLOCKIO_IFACE}" WriteRead \
     "${SIG_WRITE_READ}" ${CONTEXT} 12 ${TEST_CAN_ID_HEX} ${TEST_PAYLOAD} 12
@@ -124,9 +143,9 @@ else
     info "无预置响应数据时可能返回空"
 fi
 
-# ── 测试 3: 多帧连续写入 ────────────────────────────────────────────────
+# ── 测试 4: 多帧连续写入 ────────────────────────────────────────────────
 sep
-info "测试 3: 多帧连续写入 (不同 CAN ID)"
+info "测试 4: 多帧连续写入 (不同 CAN ID)"
 
 CAN_IDS="0xA0038280 0xA0048280 0xA0058280"
 PAYLOADS="1 2 3 4 5 6 7 8 | 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 | 0xAA 0xBB 0xCC 0xDD 0xEE 0xFF 0x11 0x22"
@@ -149,14 +168,14 @@ for CAN_ID in ${CAN_IDS}; do
     fi
 done
 
-# ── 测试 4: BlockIO.WriteRead - 查询命令 (cmd=0x82) ─────────────────────
+# ── 测试 5: BlockIO.WriteRead - 查询命令 (cmd=0x82) ─────────────────────
 # 构造查询 CAN ID: frame_type=4, addr=3, cmd=0x82, ms=1
 # pack_can_id(cnt=0, reserve=0x3F, ms=1, cmd=0x82, addr=3, protocol=0, frame_type=4)
 # = 0 | (0x3F<<1) | (1<<7) | (0x82<<8) | (3<<16) | (0<<23) | (4<<29)
 # = 0x0000007E | 0x00000080 | 0x00008200 | 0x00030000 | 0x80000000
 # = 0xA00382FE (need to verify)
 sep
-info "测试 4: BlockIO.WriteRead - 查询命令 (cmd=0x82)"
+info "测试 5: BlockIO.WriteRead - 查询命令 (cmd=0x82)"
 
 QUERY_CAN_ID=0xA00382FE
 QB0=$((QUERY_CAN_ID & 0xFF))
@@ -224,12 +243,12 @@ if [ "${HAS_BITIO}" -eq 1 ]; then
 
     # ── 测试 8: BitIO.Read - 2字节信号 ─────────────────────────────────
     sep
-    info "测试 8: BitIO.Read - 2字节信号 (signal_id=2, len=2, mask=0xFFFF)"
+    info "测试 8: BitIO.Read - 2字节信号 (signal_id=2, len=2, mask=0xFF)"
 
     cmd busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BITIO_IFACE}" Read \
-        "${SIG_BIT_READ}" ${CONTEXT} 2 2 65535
+        "${SIG_BIT_READ}" ${CONTEXT} 2 2 255
     BIT_READ2_RESULT=$(busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BITIO_IFACE}" Read \
-        "${SIG_BIT_READ}" ${CONTEXT} 2 2 65535 2>&1) || true
+        "${SIG_BIT_READ}" ${CONTEXT} 2 2 255 2>&1) || true
 
     if echo "${BIT_READ2_RESULT}" | grep -qE "^(ay )?[0-9]"; then
         pass "BitIO.Read (2字节) 成功"
@@ -242,11 +261,11 @@ if [ "${HAS_BITIO}" -eq 1 ]; then
     sep
     info "测试 9: BitIO.Write - 2字节信号 (cmd=1, signal_id=2, len=2)"
 
-    # offset = (1 << 16) | 2 = 65538
+    # offset = (1 << 16) | 2 = 65538, mask=0xFF (byte type, max 255)
     cmd busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BITIO_IFACE}" Write \
-        "${SIG_BIT_WRITE}" ${CONTEXT} 65538 2 65535 2 0x12 0x34
+        "${SIG_BIT_WRITE}" ${CONTEXT} 65538 2 255 2 0x12 0x34
     if busctl --user call "${SERVICE}" "${CHIP_PATH}" "${BITIO_IFACE}" Write \
-        "${SIG_BIT_WRITE}" ${CONTEXT} 65538 2 65535 2 0x12 0x34; then
+        "${SIG_BIT_WRITE}" ${CONTEXT} 65538 2 255 2 0x12 0x34; then
         pass "BitIO.Write (2字节) 成功"
     else
         fail "BitIO.Write (2字节) 失败"
